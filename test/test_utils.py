@@ -742,7 +742,6 @@ class TestStandaloneCPPJIT(TestCase):
             """)
             with open(src_path, "w") as f:
                 f.write(src)
-
             exec_path = torch.utils.cpp_extension.load(
                 "standalone_load_test",
                 src_path,
@@ -756,12 +755,17 @@ class TestStandaloneCPPJIT(TestCase):
                 exec_path,
                 os.path.join(build_dir, f"standalone_load_test{ext}")
             )
-
+            env = os.environ.copy()
+            if IS_WINDOWS:
+                cutpipath = "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v11.8/extras/CUPTI/lib64"
+                cudaPath = "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v11.8/bin"
+                env['PATH'] = cutpipath + os.pathsep + cudaPath + os.pathsep + env['PATH']
             for shell in [True, False]:
                 r = subprocess.run(
                     [exec_path],
                     shell=shell,
                     stdout=subprocess.PIPE,
+                    env=env
                 )
                 self.assertEqual(r.returncode, 0)
                 self.assertEqual(
