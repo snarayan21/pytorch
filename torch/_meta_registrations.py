@@ -3622,7 +3622,7 @@ def shift_dtype_check(fn_name, self, val):
 def meta_rshifts(self, other):
     shift_dtype_check("rshift", self, other)
     element_wise = elementwise_meta(
-        self, type_promotion=ELEMENTWISE_TYPE_PROMOTION_KIND.DEFAULT
+        self, other, type_promotion=ELEMENTWISE_TYPE_PROMOTION_KIND.DEFAULT
     )
     # Annoying edgecase
     if self.dim() == 0 and isinstance(other, torch.Tensor):
@@ -3636,7 +3636,7 @@ def meta_rshifts(self, other):
 def meta_lshifts(self, other):
     shift_dtype_check("lshift", self, other)
     element_wise = elementwise_meta(
-        self, type_promotion=ELEMENTWISE_TYPE_PROMOTION_KIND.DEFAULT
+        self, other, type_promotion=ELEMENTWISE_TYPE_PROMOTION_KIND.DEFAULT
     )
     # Annoying edgecase
     if self.dim() == 0 and isinstance(other, torch.Tensor):
@@ -5959,41 +5959,11 @@ _create_unary_float_meta_func(aten.special_scaled_modified_bessel_k0)
 _create_unary_float_meta_func(aten.special_scaled_modified_bessel_k1)
 
 
-_create_binary_float_meta_func(
-    [
-        aten.special_chebyshev_polynomial_t.default,
-        aten.special_chebyshev_polynomial_t.out,
-        aten.special_chebyshev_polynomial_t.n_scalar_out,
-    ]
-)
-_create_binary_float_meta_func(
-    [
-        aten.special_chebyshev_polynomial_u.default,
-        aten.special_chebyshev_polynomial_u.out,
-        aten.special_chebyshev_polynomial_u.n_scalar_out,
-    ]
-)
-_create_binary_float_meta_func(
-    [
-        aten.special_hermite_polynomial_h.default,
-        aten.special_hermite_polynomial_h.out,
-        aten.special_hermite_polynomial_h.n_scalar_out,
-    ]
-)
-_create_binary_float_meta_func(
-    [
-        aten.special_hermite_polynomial_he.default,
-        aten.special_hermite_polynomial_he.out,
-        aten.special_hermite_polynomial_he.n_scalar_out,
-    ]
-)
-_create_binary_float_meta_func(
-    [
-        aten.special_laguerre_polynomial_l.default,
-        aten.special_laguerre_polynomial_l.out,
-        aten.special_laguerre_polynomial_l.n_scalar_out,
-    ]
-)
+_create_binary_float_meta_func(aten.special_chebyshev_polynomial_t)
+_create_binary_float_meta_func(aten.special_chebyshev_polynomial_u)
+_create_binary_float_meta_func(aten.special_hermite_polynomial_h)
+_create_binary_float_meta_func(aten.special_hermite_polynomial_he)
+_create_binary_float_meta_func(aten.special_laguerre_polynomial_l)
 
 
 # We must also trigger meta registrations from PrimTorch ref
