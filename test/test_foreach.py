@@ -8,6 +8,7 @@ import torch
 import unittest
 import itertools
 import weakref
+import os
 
 from torch.testing import make_tensor
 from torch.testing._comparison import default_tolerances
@@ -60,6 +61,9 @@ class ForeachFuncWrapper:
                 actual = self.func(*inputs, **kwargs)
             keys = tuple([e.key for e in p.key_averages()])
             mta_called = any("multi_tensor_apply_kernel" in k for k in keys)
+            print('ionut')
+            print(keys)
+            print('ionut end')
             assert mta_called == (is_fastpath and (not zero_size))
         else:
             actual = self.func(*inputs, **kwargs)
@@ -172,6 +176,12 @@ class TestForeach(TestCase):
                     ref([ref_input, *sample.ref_args], **ref_kwargs)
             else:
                 expected = ref([ref_input, *sample.ref_args], **ref_kwargs)
+                print('ionut3')
+                env_vars = os.environ
+
+                # Print each environment variable
+                for key, value in env_vars.items():
+                    print(f"{key}: {value}")
                 self.assertEqual(expected, actual)
 
     def _binary_test(
