@@ -60,6 +60,8 @@ VIEW_FUNCTIONS_WITH_METADATA_CHANGE = [
     "_conj",
     "_neg_view",
     "_nested_view_from_buffer",
+    "_nested_view_from_values_offsets",
+    "_nested_view_from_values_offsets_lengths",
 ]
 
 VIEW_FUNCTIONS = {
@@ -246,12 +248,8 @@ def unpacked_name(arg_name: str) -> str:
     return arg_name + "_"
 
 
-@with_native_function
-def unpack_args(f: NativeFunction) -> Tuple[List[str], List[Binding]]:
-    body: List[str] = []
-    unpacked_bindings: List[Binding] = []
-
-    bindings = [
+def extract_bindings(f: NativeFunction) -> List[Binding]:
+    return [
         r
         for a in f.func.schema_order_arguments()
         for r in cpp.argument(
@@ -264,7 +262,13 @@ def unpack_args(f: NativeFunction) -> Tuple[List[str], List[Binding]]:
         )
     ]
 
-    for i, binding in enumerate(bindings):
+
+@with_native_function
+def unpack_args(f: NativeFunction) -> Tuple[List[str], List[Binding]]:
+    body: List[str] = []
+    unpacked_bindings: List[Binding] = []
+
+    for i, binding in enumerate(extract_bindings(f)):
         assert not isinstance(binding.argument, SelfArgument)
         if isinstance(binding.argument, TensorOptionsArguments):
             raise RuntimeError("VariableKernel shouldn't take TensorOptions")
@@ -321,7 +325,7 @@ def emit_view_call(
     )
 
 
-def emit_view_lambda(f: NativeFunction, unpacked_bindings: List[Binding]) -> str:
+def emit_view_lambda(f: NativeFunction, bindings: List[Binding]) -> str:
     """Generate an additional lambda function to recover views in backward when as_strided is not supported.
     See Note [View + Inplace update for base tensor] and [View + Inplace update for view tensor] for more details.
     """
@@ -338,9 +342,9 @@ def emit_view_lambda(f: NativeFunction, unpacked_bindings: List[Binding]) -> str
         BaseCType(symIntArrayRefT),
         ConstRefCType(BaseCType(tensorT)),
     ]
-    for unpacked_binding in unpacked_bindings:
-        arg, arg_type = unpacked_binding.name, unpacked_binding.nctype.type
-        if arg == "self_":
+    for binding in bindings:
+        arg, arg_type = binding.name, binding.nctype.type
+        if arg == "self":
             updated_unpacked_args.append(input_base)
             continue
         if arg_type not in known_view_arg_simple_types:
@@ -366,13 +370,10 @@ def emit_view_lambda(f: NativeFunction, unpacked_bindings: List[Binding]) -> str
                 arg=arg, val=arg_value, default="0"
             )
             updated_unpacked_args.append(arg_value)
-        elif (
-            arg == "nested_size_" or arg == "nested_strides_" or arg == "offsets_"
-        ) and arg_type == ConstRefCType(BaseCType(tensorT)):
-            # [NOTE] [Nested Arg Types]
-            # This is temporary. Nested tensors will be migrating to use SymInts and
-            # nested_size and nested_strides will no longer be tensors.
-            updated_unpacked_args.append(arg[:-1])
+        elif arg_type == ConstRefCType(BaseCType(tensorT)):
+            # NB: Closing over a tensor. If a user modifies this tensor, this will be silently
+            # incorrect. The proper thing to do is to store the version counter and copy on write.
+            updated_unpacked_args.append(arg)
         else:
             updated_unpacked_args.append(arg)
 
@@ -439,8 +440,7 @@ def emit_view_body(
             )
             rhs_value = f"std::move({var})"
         else:
-            _, unpacked_bindings = unpack_args(f)
-            call += emit_view_lambda(f, unpacked_bindings)
+            call += emit_view_lambda(f, extract_bindings(f))
             creation_meta = get_creation_meta_in_mode("CreationMeta::DEFAULT")
             rhs_value = (
                 f"as_view(/* base */ {view_info}, /* output */ {var}, /* is_bw_differentiable */ true, "
