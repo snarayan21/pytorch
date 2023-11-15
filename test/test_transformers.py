@@ -7,6 +7,8 @@ import sys
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.nn.functional import scaled_dot_product_attention
+from torch.nn.utils.attention import CausalVariant, CausalBias, TensorBias
 from torch.nn.parameter import Parameter
 import unittest
 from unittest.mock import patch, MagicMock, ANY
@@ -103,6 +105,15 @@ backend_map = {
     SDPBackend.EFFICIENT_ATTENTION: {
         "enable_math": False, "enable_flash": False, "enable_mem_efficient": True}
 }
+
+def query_key_value_clones(query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, dtype: torch.dtype = None):
+    """ Clones the query, key, and value tensors and moves them to the specified dtype. """
+    if dtype is None:
+        dtype = query.dtype
+    query_ref = query.clone().detach().to(dtype).requires_grad_(query.requires_grad)
+    key_ref = key.clone().detach().to(dtype).requires_grad_(key.requires_grad)
+    value_ref = value.clone().detach().to(dtype).requires_grad_(value.requires_grad)
+    return query_ref, key_ref, value_ref
 
 
 def rand_sdpa_tensor(shape: SdpaShape, device: str, dtype: torch.dtype, type: str,
@@ -1822,13 +1833,6 @@ class TestSDPACudaOnly(NNTestCase):
             S_converted = F.pad(S_converted, (0, seqlen_k_og - seqlen_k))
         return S_converted
 
-    def query_key_value_clones(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, dtype: torch.dtype):
-        """ Clones the query, key, and value tensors and moves them to the specified dtype. """
-        query_ref = query.clone().detach().to(dtype).requires_grad_(query.requires_grad)
-        key_ref = key.clone().detach().to(dtype).requires_grad_(key.requires_grad)
-        value_ref = value.clone().detach().to(dtype).requires_grad_(value.requires_grad)
-        return query_ref, key_ref, value_ref
-
     @unittest.skipIf(not PLATFORM_SUPPORTS_MEM_EFF_ATTENTION, "Fused SDPA was not built for this system")
     @parametrize("mask_dim", [1, 2, 3, 4])
     def test_mem_efficient_attetntion_mask_variants(self, device, mask_dim: List[int]):
@@ -2242,10 +2246,10 @@ class TestSDPACudaOnly(NNTestCase):
                            device=device, dtype=dtype, requires_grad=True)
 
         # Run the math kernel on low precision references
-        query_ref_lp, key_ref_lp, value_ref_lp = self.query_key_value_clones(query, key, value, dtype=dtype)
+        query_ref_lp, key_ref_lp, value_ref_lp = query_key_value_clones(query, key, value, dtype=dtype)
 
         higher_precision_dtype = torch.float64 if dtype == torch.float32 else torch.float32
-        query_ref, key_ref, value_ref = self.query_key_value_clones(query, key, value, dtype=higher_precision_dtype)
+        query_ref, key_ref, value_ref = query_key_value_clones(query, key, value, dtype=higher_precision_dtype)
 
         # Create real output
         with sdp_kernel(enable_mem_efficient=True, enable_flash=False, enable_math=False):
@@ -2346,11 +2350,11 @@ class TestSDPACudaOnly(NNTestCase):
         attn_mask = torch.rand(seq_len_q, seq_len_k, device=device, dtype=dtype, requires_grad=True)
 
         # Run the math kernel on low precision references
-        query_ref_lp, key_ref_lp, value_ref_lp = self.query_key_value_clones(query, key, value, dtype=dtype)
+        query_ref_lp, key_ref_lp, value_ref_lp = query_key_value_clones(query, key, value, dtype=dtype)
         attn_mask_ref_lp = attn_mask.detach().to(dtype).requires_grad_(True)
 
         higher_precision_dtype = torch.float64 if dtype == torch.float32 else torch.float32
-        query_ref, key_ref, value_ref = self.query_key_value_clones(query, key, value, dtype=higher_precision_dtype)
+        query_ref, key_ref, value_ref = query_key_value_clones(query, key, value, dtype=higher_precision_dtype)
         attn_mask_ref = attn_mask.detach().to(higher_precision_dtype).requires_grad_(True)
 
         # Create real output
@@ -2456,10 +2460,10 @@ class TestSDPACudaOnly(NNTestCase):
                            device=device, dtype=dtype, requires_grad=True)
 
         # Run the math kernel on low precision references
-        query_ref_lp, key_ref_lp, value_ref_lp = self.query_key_value_clones(query, key, value, dtype=dtype)
+        query_ref_lp, key_ref_lp, value_ref_lp = query_key_value_clones(query, key, value, dtype=dtype)
 
         higher_precision_dtype = torch.float64 if dtype == torch.float32 else torch.float32
-        query_ref, key_ref, value_ref = self.query_key_value_clones(query, key, value, dtype=higher_precision_dtype)
+        query_ref, key_ref, value_ref = query_key_value_clones(query, key, value, dtype=higher_precision_dtype)
 
         is_dropout = dropout_p > 0.0
 
@@ -2594,10 +2598,10 @@ class TestSDPACudaOnly(NNTestCase):
         fused_op = (torch.ops.aten._scaled_dot_product_efficient_attention
                     if fused_kernel == SDPBackend.EFFICIENT_ATTENTION else torch.ops.aten._scaled_dot_product_flash_attention)
         # Run the math kernel on low precision references
-        query_ref_lp, key_ref_lp, value_ref_lp = self.query_key_value_clones(query, key, value, dtype=dtype)
+        query_ref_lp, key_ref_lp, value_ref_lp = query_key_value_clones(query, key, value, dtype=dtype)
 
         higher_precision_dtype = torch.float64 if dtype == torch.float32 else torch.float32
-        query_ref, key_ref, value_ref = self.query_key_value_clones(query, key, value, dtype=higher_precision_dtype)
+        query_ref, key_ref, value_ref = query_key_value_clones(query, key, value, dtype=higher_precision_dtype)
 
         # warmup
         s = torch.cuda.Stream()
@@ -2967,6 +2971,149 @@ class TestSDPACudaOnly(NNTestCase):
         self.assertEqual(value.grad, value_ref.grad.to(value.grad.dtype),
                          atol=grad_v_ref_atol, rtol=grad_v_ref_rtol)
 
+class TestAttnMasks(NNTestCase):
+
+    @parametrize("compile", [True, False])
+    def test_base_case(self, device, compile: bool):
+        if compile:
+            self.skipTest("Compiling torch_function_ not working")
+            torch._dynamo.reset()
+        # Bsz, num_heads, seq_len, head_dim
+        shape = SdpaShape(16, 16, 128, 16)
+        make_tensor = partial(
+            torch.rand, shape, device=device, dtype=torch.float16, requires_grad=True
+        )
+        query, key, value = make_tensor(), make_tensor(), make_tensor()
+        query_prototype, key_prototype, value_prototype = query_key_value_clones(query, key, value)
+
+        pytorch_output = scaled_dot_product_attention(
+            query, key, value, dropout_p=0.0, is_causal=False
+        )
+
+        sdpa_op = (
+            torch.compile(scaled_dot_product_attention, fullgraph=True)
+            if compile
+            else scaled_dot_product_attention
+        )
+        sdpa_output = sdpa_op(
+            query_prototype, key_prototype, value_prototype, None, is_causal=False, dropout_p=0.0
+        )
+
+        dOut = torch.randn_like(pytorch_output)
+        pytorch_output.backward(dOut)
+        sdpa_output.backward(dOut)
+
+        torch.testing.assert_close(pytorch_output, sdpa_output, rtol=1e-5, atol=1e-5)
+        torch.testing.assert_close(query.grad, query_prototype.grad, rtol=1e-5, atol=1e-5)
+        torch.testing.assert_close(key.grad, key_prototype.grad, rtol=1e-5, atol=1e-5)
+        torch.testing.assert_close(value.grad, value_prototype.grad, rtol=1e-5, atol=1e-5)
+
+
+    @parametrize("causal_variant", [CausalVariant.UPPER_LEFT, CausalVariant.LOWER_RIGHT])
+    @parametrize(
+        "shapes",
+        [(16, 16, 128, 128, 16), (16, 16, 128, 256, 32), (16, 16, 256, 128, 32), (1, 1, 23, 56, 15)],
+    )
+    @parametrize("compile", [True, False])
+    def test_causal_variants(self, device, causal_variant: CausalVariant, shapes: List[Tuple[int]], compile: bool):
+        make_tensor = partial(
+            torch.rand, device=device, dtype=torch.float16, requires_grad=True
+        )
+        if compile:
+            self.skipTest("Compiling torch_function_ not working")
+            torch._dynamo.reset()
+        torch.manual_seed(123)
+        bsz, num_heads, seq_len_q, seq_len_kv, head_dim = shapes
+        if causal_variant == CausalVariant.LOWER_RIGHT and seq_len_q > seq_len_kv:
+            self.skipTest(
+                "Lower right causal mask will produce NaNs in the output when seq_len_q > seq_len_kv!"
+            )
+
+        make_q_tensor = partial(make_tensor, SdpaShape(bsz, num_heads, seq_len_q, head_dim))
+        make_kv_tensor = partial(make_tensor, SdpaShape(bsz, num_heads, seq_len_kv, head_dim))
+
+        query, key, value = make_q_tensor(), make_kv_tensor(), make_kv_tensor()
+        query_prototype, key_prototype, value_prototype = query_key_value_clones(query, key, value)
+        attn_bias = CausalBias(causal_variant, seq_len_q, seq_len_kv)
+
+        pytorch_output = scaled_dot_product_attention(
+            query, key, value, attn_mask=attn_bias.materialize(device), dropout_p=0.0, is_causal=False
+        )
+        sdpa_op = (
+            torch.compile(scaled_dot_product_attention, fullgraph=True)
+            if compile
+            else scaled_dot_product_attention
+        )
+        sdpa_output = sdpa_op(
+            query_prototype,
+            key_prototype,
+            value_prototype,
+            attn_mask=attn_bias,
+            scale=None,
+            is_causal=False,
+            dropout_p=0.0,
+        )
+
+        dOut = torch.randn_like(pytorch_output)
+        pytorch_output.backward(dOut)
+        sdpa_output.backward(dOut)
+        atol, rtol = 1e-3, 1e-3
+        grad_atol, grad_rtol = 5e-3, 5e-3
+        torch.testing.assert_close(pytorch_output, sdpa_output, atol=atol, rtol=rtol)
+        torch.testing.assert_close(query.grad, query_prototype.grad, atol=grad_atol, rtol=grad_rtol)
+        torch.testing.assert_close(key.grad, key_prototype.grad, atol=grad_atol, rtol=grad_rtol)
+        torch.testing.assert_close(value.grad, value_prototype.grad, atol=grad_atol, rtol=grad_rtol)
+
+
+    @parametrize("shape", [SdpaShape(16, 16, 128, 16), SdpaShape(16, 16, 52, 32)])
+    @parametrize("compile", [True, False])
+    def test_tensor_bias(self, device, shape: SdpaShape, compile: bool):
+        if compile:
+            self.skipTest("Compiling torch_function_ not working")
+            torch._dynamo.reset()
+
+        make_tensor = partial(
+            torch.rand, shape, device=device, dtype=torch.float16, requires_grad=True
+        )
+        query, key, value = make_tensor(), make_tensor(), make_tensor()
+        query_prototype, key_prototype, value_prototype = query_key_value_clones(query, key, value)
+        attn_bias = TensorBias(
+            torch.rand(shape.batch, shape.num_heads, shape.seq_len, shape.seq_len, dtype=torch.float16, device=device)
+        )
+
+        pytorch_output = scaled_dot_product_attention(
+            query, key, value, attn_mask=attn_bias.materialize(device), dropout_p=0.0, is_causal=False
+        )
+
+        sdpa_op = (
+            torch.compile(scaled_dot_product_attention, fullgraph=True)
+            if compile
+            else scaled_dot_product_attention
+        )
+        sdpa_output = sdpa_op(
+            query_prototype,
+            key_prototype,
+            value_prototype,
+            attn_mask=attn_bias,
+            dropout_p=0.0,
+            is_causal=False,
+            scale=None,
+        )
+
+        dOut = torch.randn_like(pytorch_output)
+        pytorch_output.backward(dOut)
+        sdpa_output.backward(dOut)
+        atol, rtol = 5e-4, 5e-4
+        grad_atol, grad_rtol = 5e-3, 5e-3
+        torch.testing.assert_close(pytorch_output, sdpa_output, atol=atol, rtol=rtol)
+        torch.testing.assert_close(query.grad, query_prototype.grad, atol=grad_atol, rtol=grad_rtol)
+        torch.testing.assert_close(key.grad, key_prototype.grad, atol=grad_atol, rtol=grad_rtol)
+        torch.testing.assert_close(value.grad, value_prototype.grad, atol=grad_atol, rtol=grad_rtol)
+
+    def test_attn_bias_invalid_func(self, device):
+        bias = TensorBias(torch.rand(16, 16, 128, dtype=torch.float16, device=device))
+        with self.assertRaisesRegex(RuntimeError, "AttnBias only supports scaled_dot_product_attention"):
+            torch.add(bias, torch.rand_like(bias.bias))
 
 if NOTEST_CPU:
     device_types = ("cuda", )
@@ -2977,6 +3124,7 @@ instantiate_device_type_tests(TestTransformers, globals(), only_for=device_types
 instantiate_device_type_tests(TestSDPAFailureModes, globals(), only_for=device_types)
 instantiate_device_type_tests(TestSDPA, globals(), only_for=device_types)
 instantiate_device_type_tests(TestSDPACudaOnly, globals(), only_for=("cuda"))
+instantiate_device_type_tests(TestAttnMasks, globals(), only_for=("cuda"))
 
 if __name__ == '__main__':
     run_tests()
