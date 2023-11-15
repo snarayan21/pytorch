@@ -1336,11 +1336,15 @@ class FlatParamHandle:
                 tensor_list, sharded_flat_param, group=self.process_group
             )
         else:
-            dist.all_gather_into_tensor(
-                padded_unsharded_flat_param,
-                sharded_flat_param,
-                self.process_group,
+            # dist.all_gather_into_tensor(
+            #     padded_unsharded_flat_param,
+            #     sharded_flat_param,
+            #     self.process_group,
+            # )
+            tensor_list = list(
+                torch.chunk(padded_unsharded_flat_param, dist.get_world_size(group=self.process_group))
             )
+            dist.all_gather(tensor_list, sharded_flat_param, group=self.process_group)
         return padded_unsharded_flat_param
 
     def _use_unsharded_flat_param(
@@ -1445,9 +1449,13 @@ class FlatParamHandle:
             self._check_sharded(flat_param.grad)
             flat_param._saved_grad_shard = flat_param.grad  # type: ignore[attr-defined]
             sharded_grad = flat_param._saved_grad_shard  # type: ignore[attr-defined]
-        dist.all_gather_into_tensor(
-            padded_unsharded_grad, sharded_grad, self.process_group
+        # dist.all_gather_into_tensor(
+        #     padded_unsharded_grad, sharded_grad, self.process_group
+        # )
+        tensor_list = list(
+            torch.chunk(padded_unsharded_grad, dist.get_world_size(group=self.process_group))
         )
+        dist.all_gather(tensor_list, sharded_grad, group=self.process_group)
         unsharded_size = self.flat_param._unpadded_unsharded_size
         flat_param.grad = padded_unsharded_grad[: unsharded_size.numel()].view(
             unsharded_size

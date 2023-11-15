@@ -644,9 +644,13 @@ def _sharded_pre_load_state_dict_hook(
                 )
                 tensor.to(tensor_dev)
             else:
-                dist.all_gather_into_tensor(
-                    tensor, local_tensor, group=fsdp_state.process_group
+                # dist.all_gather_into_tensor(
+                #     tensor, local_tensor, group=fsdp_state.process_group
+                # )
+                tensor_list = list(
+                    torch.chunk(tensor, dist.get_world_size(group=fsdp_state.process_group))
                 )
+                dist.all_gather(tensor_list, local_tensor, group=fsdp_state.process_group)
             tensor = tensor.narrow(0, 0, param_numel).reshape(param.size())
             state_dict[fqn_from_global_root] = tensor
         else:

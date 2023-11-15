@@ -850,11 +850,14 @@ def _reduce_grad(state: _FSDPState, handle: FlatParamHandle) -> None:
     )
     if state._comm_hook is None:  # default path
         _div_if_needed(padded_unsharded_grad, state._gradient_predivide_factor)
-        dist.reduce_scatter_tensor(
-            new_sharded_grad,
-            padded_unsharded_grad,
-            group=state.process_group,
-        )
+
+        # dist.reduce_scatter_tensor(
+        #     new_sharded_grad,
+        #     padded_unsharded_grad,
+        #     group=state.process_group,
+        # )
+        tensor_list = list(torch.chunk(padded_unsharded_grad, dist.get_world_size(state.process_group)))
+        dist.reduce_scatter(new_sharded_grad, tensor_list, group=state.process_group)
         if uses_hybrid_sharded_strategy:
             state._all_reduce_stream.wait_stream(state._post_backward_stream)
             with state._device_handle.stream(state._all_reduce_stream):

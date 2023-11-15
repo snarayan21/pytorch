@@ -205,11 +205,15 @@ class _ExecOrderData:
             }
             world_num_valid_indices = torch.zeros(self.world_size, **tensor_kwargs)  # type: ignore[arg-type, call-overload]
             local_num_valid_indices = torch.tensor([num_valid_indices], **tensor_kwargs)  # type: ignore[arg-type, call-overload]
-            dist.all_gather_into_tensor(
-                world_num_valid_indices,
-                local_num_valid_indices,
-                group=self.process_group,
+            # dist.all_gather_into_tensor(
+            #     world_num_valid_indices,
+            #     local_num_valid_indices,
+            #     group=self.process_group,
+            # )
+            tensor_list = list(
+                torch.chunk(world_num_valid_indices, dist.get_world_size(group=self.process_group))
             )
+            dist.all_gather(tensor_list, local_num_valid_indices, group=self.process_group)
             # Copy entire tensor from D2H once to avoid per element D2H copies
             world_num_valid_indices = world_num_valid_indices.cpu()
             # Check that all ranks plan to all-gather the same number of
@@ -240,6 +244,10 @@ class _ExecOrderData:
             dist.all_gather_into_tensor(
                 world_indices, local_indices, group=self.process_group
             )
+            tensor_list = list(
+                torch.chunk(world_indices, dist.get_world_size(group=self.process_group))
+            )
+            dist.all_gather(tensor_list, local_indices, group=self.process_group)
             # Copy entire tensor from D2H once to avoid per element D2H copies
             world_indices = world_indices.cpu()
             # Check that all ranks plan to all-gather the same index parameters

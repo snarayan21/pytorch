@@ -110,9 +110,11 @@ def reduce_scatter_hook(state: DefaultState, grad: torch.Tensor, output: torch.T
     # Average grad by pre-division factor.
     if state.gradient_predivide_factor > 1:
         grad.div_(state.gradient_predivide_factor)
-    dist.reduce_scatter_tensor(
-        output, grad, group=state.process_group
-    )
+    # dist.reduce_scatter_tensor(
+    #     output, grad, group=state.process_group
+    # )
+    tensor_list = list(torch.chunk(grad, dist.get_world_size(state.process_group)))
+    dist.reduce_scatter(output, tensor_list, group=state.process_group)
     # Average grad's shard by post-division factor.
     if state.gradient_postdivide_factor > 1:
         output.div_(state.gradient_postdivide_factor)
