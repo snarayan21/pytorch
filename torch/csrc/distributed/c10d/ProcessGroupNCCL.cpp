@@ -24,6 +24,7 @@
 #include <torch/csrc/distributed/c10d/ParamCommsUtils.hpp>
 #include <torch/csrc/distributed/c10d/TraceUtils.h>
 #include <torch/csrc/distributed/c10d/Utils.hpp>
+#include <torch/csrc/distributed/c10d/ProcessGroupMPI.hpp>
 
 #include <torch/csrc/cuda/nccl.h>
 #include <torch/torch.h>
