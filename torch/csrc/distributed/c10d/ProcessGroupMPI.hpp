@@ -97,7 +97,6 @@ class TORCH_API ProcessGroupMPI : public Backend {
 
     c10::intrusive_ptr<c10::ivalue::Future> getFuture() override;
 
-   protected:
     friend class ProcessGroupMPI;
 
    private:
@@ -232,7 +231,6 @@ class TORCH_API ProcessGroupMPI : public Backend {
   static c10::intrusive_ptr<ProcessGroupMPI> createProcessGroupMPI(
       std::vector<int> ranks = {});
 
- protected:
   using WorkType =
       std::tuple<std::unique_ptr<WorkEntry>, c10::intrusive_ptr<WorkMPI>>;
   // Worker thread loop

@@ -11,6 +11,8 @@
 #include <tuple>
 #include <unordered_set>
 #include <utility>
+#include <iostream>
+#include <limits>
 
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/core/DeviceType.h>
@@ -20,16 +22,31 @@
 #include <c10/util/Exception.h>
 #include <c10/util/Logging.h>
 #include <c10/util/Optional.h>
+#include <c10/core/DeviceGuard.h>
 #include <c10/util/irange.h>
 #include <torch/csrc/distributed/c10d/ParamCommsUtils.hpp>
 #include <torch/csrc/distributed/c10d/TraceUtils.h>
 #include <torch/csrc/distributed/c10d/Utils.hpp>
-#include <torch/csrc/distributed/c10d/ProcessGroupMPI.hpp>
 
 #include <torch/csrc/cuda/nccl.h>
 #include <torch/torch.h>
 
+#if defined(OPEN_MPI) && OPEN_MPI
+#include <mpi-ext.h> // Needed for CUDA-aware check
+#endif
+
 namespace c10d {
+
+#define MPI_CHECK(cmd)                                                   \
+  do {                                                                   \
+    int mpiStatus = cmd;                                                 \
+    if (mpiStatus != MPI_SUCCESS) {                                      \
+      std::string err = "MPI error in: " + std::string(__FILE__) + ":" + \
+          std::to_string(__LINE__) +                                     \
+          ", with error code: " + std::to_string(mpiStatus);             \
+      TORCH_CHECK(false, err);                                           \
+    }                                                                    \
+  } while (0)
 
 constexpr const char* const kNCCLAbortedCommStoreKey = "NCCLABORTEDCOMM";
 
@@ -64,6 +81,17 @@ std::map<at::ScalarType, ncclDataType_t> ncclDataType = {
 #if HAS_NCCL_BF16_DATATYPE
     {at::kBFloat16, ncclBfloat16},
 #endif
+};
+
+// MPI Type mapping
+std::map<at::ScalarType, MPI_Datatype> mpiDatatype = {
+    {at::kByte, MPI_UNSIGNED_CHAR},
+    {at::kChar, MPI_CHAR},
+    {at::kDouble, MPI_DOUBLE},
+    {at::kFloat, MPI_FLOAT},
+    {at::kInt, MPI_INT},
+    {at::kLong, MPI_LONG},
+    {at::kShort, MPI_SHORT},
 };
 
 // Helper function that gets the data type and issues error if not supported
@@ -287,6 +315,12 @@ inline void errorIfCapturingNonCapturableNCCL(c10::cuda::CaptureStatus status) {
 const int64_t ProcessGroupNCCL::kWatchdogThreadSleepMillis = 1000;
 constexpr int64_t kSynchronizeBusyWaitMillis = 10;
 thread_local uint64_t ProcessGroupNCCL::ncclActiveGroupCounter_ = 0;
+
+// FROM MPI: some more static global states
+int ProcessGroupNCCL::mpiThreadSupport_ = 0;
+std::mutex ProcessGroupNCCL::pgGlobalMutex_;
+// We only want to initialize once
+c10::once_flag ProcessGroupNCCL::onceFlagInitNCCL;
 
 std::ostream& operator<<(
     std::ostream& output,
@@ -1391,6 +1425,22 @@ void check_gpu_single_tensor(const at::Tensor& tensor) {
   }
   if (!tensor.is_contiguous(tensor.suggest_memory_format())) {
     TORCH_CHECK(false, "Tensors must be contiguous");
+  }
+}
+
+// FROM MPI: Checking the input tensor's validity
+void checkSingleTensorHelper(const at::Tensor& tensor) {
+  if (!tensor.is_contiguous()) {
+    TORCH_CHECK(false, "input tensor has to be contiguous");
+  }
+  if (tensor.is_sparse()) {
+    TORCH_CHECK(false, "input tensor has to be dense");
+  }
+  if (tensor.is_cuda() && !cudaAwareMpiCheck()) {
+    TORCH_CHECK(
+        false,
+        "CUDA tensor detected and the MPI used doesn't "
+        "have CUDA-aware MPI support");
   }
 }
 
@@ -2933,8 +2983,82 @@ c10::intrusive_ptr<Work> ProcessGroupNCCL::alltoall_base(
     at::Tensor& inputTensor,
     std::vector<int64_t>& outputSplitSizes,
     std::vector<int64_t>& inputSplitSizes,
-    const AllToAllOptions& /* unused */) {
-  return ProcessGroupMPI::alltoall_base(outputTensor, inputTensor, outputSplitSizes, inputSplitSizes);
+    const AllToAllOptions& opts) {
+  checkSingleTensorHelper(inputTensor);
+  checkSingleTensorHelper(outputTensor);
+
+  if (outputSplitSizes.size() == 0 && inputSplitSizes.size() == 0) {
+    // We can use alltoall
+    TORCH_CHECK(
+        outputTensor.numel() == inputTensor.numel() &&
+            outputTensor.type() == inputTensor.type(),
+        "Tensors are not equal in size or data type");
+    TORCH_CHECK(
+        outputTensor.size(0) % size_ == 0,
+        "Tensor's dim 0 does not divide equally across group size");
+
+    std::function<void(std::unique_ptr<WorkEntry>&)> runFunc =
+        [this](std::unique_ptr<WorkEntry>& entry) {
+          auto srcdata = (entry->src)[0];
+          auto dstdata = (entry->dst)[0];
+          c10::DeviceGuard guard(srcdata.device());
+          std::unique_lock<std::mutex> globalLock(pgGlobalMutex_);
+          MPI_CHECK(MPI_Alltoall(
+              srcdata.data_ptr(),
+              srcdata.numel() / size_,
+              mpiDatatype.at(srcdata.scalar_type()),
+              dstdata.data_ptr(),
+              dstdata.numel() / size_,
+              mpiDatatype.at(dstdata.scalar_type()),
+              pgComm_));
+        };
+    std::vector<at::Tensor> inputTensors = {inputTensor};
+    std::vector<at::Tensor> outputTensors = {outputTensor};
+    auto entry = std::make_unique<WorkEntry>(
+        &inputTensors, &outputTensors, std::move(runFunc));
+    return enqueue(
+        std::move(entry),
+        "mpi:all_to_all",
+        c10::optional<std::vector<at::Tensor>>(inputTensors));
+  } else {
+    // Need alltoallv
+    c10d::checkSplitSizes(inputSplitSizes, inputTensor, size_);
+    c10d::checkSplitSizes(outputSplitSizes, outputTensor, size_);
+    std::function<void(std::unique_ptr<WorkEntry>&)> runFunc =
+        [this, inputSplitSizes, outputSplitSizes](
+            std::unique_ptr<WorkEntry>& entry) {
+          auto srcdata = (entry->src)[0];
+          auto dstdata = (entry->dst)[0];
+          std::vector<int> send_lengths(size_);
+          std::vector<int> recv_lengths(size_);
+          std::vector<int> send_offsets(size_);
+          std::vector<int> recv_offsets(size_);
+          c10d::computeLengthsAndOffsets(
+              inputSplitSizes, srcdata, &send_lengths, &send_offsets);
+          c10d::computeLengthsAndOffsets(
+              outputSplitSizes, dstdata, &recv_lengths, &recv_offsets);
+          c10::DeviceGuard guard(srcdata.device());
+          std::unique_lock<std::mutex> globalLock(pgGlobalMutex_);
+          MPI_CHECK(MPI_Alltoallv(
+              srcdata.data_ptr(),
+              send_lengths.data(),
+              send_offsets.data(),
+              mpiDatatype.at(srcdata.scalar_type()),
+              dstdata.data_ptr(),
+              recv_lengths.data(),
+              recv_offsets.data(),
+              mpiDatatype.at(dstdata.scalar_type()),
+              pgComm_));
+        };
+    std::vector<at::Tensor> inputTensors = {inputTensor};
+    std::vector<at::Tensor> outputTensors = {outputTensor};
+    auto entry = std::make_unique<WorkEntry>(
+        &inputTensors, &outputTensors, std::move(runFunc));
+    return enqueue(
+        std::move(entry),
+        "mpi:all_to_all",
+        c10::optional<std::vector<at::Tensor>>(inputTensors));
+  }
 }
 
 
