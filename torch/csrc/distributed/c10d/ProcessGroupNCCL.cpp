@@ -681,8 +681,8 @@ ProcessGroupNCCL::ProcessGroupNCCL(
 
   init();
   // also initialize MPI...?
-  initMPIOnce();
-  
+  ProcessGroupMPI::initMPIOnce();
+
   const std::string OFF = "OFF";
   const char* torch_distributed_debug =
       parseEnvVarString("TORCH_DISTRIBUTED_DEBUG", OFF.c_str());
@@ -2927,6 +2927,7 @@ c10::intrusive_ptr<Work> ProcessGroupNCCL::barrier(const BarrierOptions& opts) {
 //   }
 // }
 
+#ifdef ENABLE_NCCL_P2P_SUPPORT
 c10::intrusive_ptr<Work> ProcessGroupNCCL::alltoall_base(
     at::Tensor& outputTensor,
     at::Tensor& inputTensor,
