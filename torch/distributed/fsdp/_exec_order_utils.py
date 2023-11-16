@@ -241,9 +241,9 @@ class _ExecOrderData:
                 self.world_size * num_valid_indices, **tensor_kwargs
             )
             local_indices = torch.tensor(optional_local_indices, **tensor_kwargs)  # type: ignore[arg-type]
-            dist.all_gather_into_tensor(
-                world_indices, local_indices, group=self.process_group
-            )
+            # dist.all_gather_into_tensor(
+            #     world_indices, local_indices, group=self.process_group
+            # )
             tensor_list = list(
                 torch.chunk(world_indices, dist.get_world_size(group=self.process_group))
             )
