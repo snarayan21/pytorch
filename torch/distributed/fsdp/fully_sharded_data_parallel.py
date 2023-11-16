@@ -572,11 +572,14 @@ class _ExecOrderData:
             tensor_kwargs = {"dtype": torch.int32, "device": device}
             world_num_valid_indices = torch.zeros(self.world_size, **tensor_kwargs)
             local_num_valid_indices = torch.tensor([num_valid_indices], **tensor_kwargs)
-            dist._all_gather_base(
-                world_num_valid_indices,
-                local_num_valid_indices,
-                group=self.process_group,
-            )
+            # dist._all_gather_base(
+            #     world_num_valid_indices,
+            #     local_num_valid_indices,
+            #     group=self.process_group,
+            # )
+            output_tensor_list = list(torch.chunk(world_num_valid_indices, dist.get_world_size(group=self.process_group)))
+            dist.all_gather(output_tensor_list, local_num_valid_indices, group=self.process_group)
+            world_num_valid_indices=torch.cat(output_tensor_list)
             # Check that all ranks plan to all-gather the same number of
             # parameters
             # TODO (awgu): Since every module has at most one handle in the
@@ -597,9 +600,12 @@ class _ExecOrderData:
                 self.world_size * num_valid_indices, **tensor_kwargs
             )
             local_indices = torch.tensor(local_indices, **tensor_kwargs)
-            dist._all_gather_base(
-                world_indices, local_indices, group=self.process_group
-            )
+            # dist._all_gather_base(
+            #     world_indices, local_indices, group=self.process_group
+            # )
+            output_tensor_list = list(torch.chunk(world_indices, dist.get_world_size(group=self.process_group)))
+            dist.all_gather(output_tensor_list, local_indices, group=self.process_group)
+            world_indices=torch.cat(output_tensor_list)
             # Check that all ranks plan to all-gather the same index parameters
             for (r1, i1), (r2, i2) in itertools.combinations(
                 (
@@ -2574,7 +2580,10 @@ class FullyShardedDataParallel(nn.Module):
             tensor = torch.empty(
                 chunk_size * self.world_size, dtype=local_tensor.dtype
             ).cuda()
-            dist._all_gather_base(tensor, local_tensor, group=self.process_group)
+            # dist._all_gather_base(tensor, local_tensor, group=self.process_group)
+            output_tensors = list(torch.chunk(tensor, dist.get_world_size(group=self.process_group)))
+            dist.all_gather(output_tensors, local_tensor, group=self.process_group)
+            tensor=torch.cat(output_tensors)
             tensor = tensor.narrow(0, 0, param_numel).reshape(param.size())
             nonsharded_tensors.append(tensor)
 

@@ -192,7 +192,10 @@ def _communicate_optim_state(
             # has the same shape as the sharded flattened parameter
             buffer_size = flat_param._full_param_padded.size()  # type: ignore[attr-defined]
             tensor_buffer = value.new_zeros(*buffer_size)
-            dist._all_gather_base(tensor_buffer, value, group=group)
+            # dist._all_gather_base(tensor_buffer, value, group=group)
+            output_tensor_list = list(torch.chunk(tensor_buffer, dist.get_world_size(group=group)))
+            dist.all_gather(output_tensor_list, value, group=group)
+            tensor_buffer=torch.cat(output_tensor_list)
             torch.cuda.synchronize()
             if to_save:
                 unpadded_numel = flat_param._unpadded_unsharded_size.numel()  # type: ignore[attr-defined]

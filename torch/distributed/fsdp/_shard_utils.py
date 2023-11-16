@@ -181,7 +181,10 @@ def _all_gather_sharded_tensor(
         dtype=local_tensor.dtype,
         device=cuda_device,
     )
-    dist._all_gather_base(tensor, local_tensor, group=pg)
+    # dist._all_gather_base(tensor, local_tensor, group=pg)
+    output_tensor_list = list(torch.chunk(tensor, dist.get_world_size(group=pg)))
+    dist.all_gather(output_tensor_list, local_tensor, group=pg)
+    tensor=torch.cat(output_tensor_list)
 
     tensor = tensor.narrow(0, 0, tensor_numel).reshape(sharded_tensor.size())
     return tensor

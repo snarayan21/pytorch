@@ -348,7 +348,10 @@ class _AllGatherBase(Function):
     @staticmethod
     def forward(ctx, output_tensor, input_tensor, group):
         ctx.group = group
-        dist._all_gather_base(output_tensor, input_tensor.contiguous(), group=group)
+        # dist._all_gather_base(output_tensor, input_tensor.contiguous(), group=group)
+        output_tensor_list = list(torch.chunk(output_tensor, dist.get_world_size(group=group)))
+        dist.all_gather(output_tensor_list, input_tensor.contiguous(), group=group)
+        output_tensor=torch.cat(output_tensor_list)
         return output_tensor
 
     @staticmethod
@@ -363,7 +366,9 @@ class _AllGatherBase(Function):
                 )
             out_size[0] = out_size[0] // dist.get_world_size(group=ctx.group)
             gx = torch.empty(out_size, device=grad_output.device, dtype=grad_output.dtype)
-            dist._reduce_scatter_base(gx, grad_output, ReduceOp.SUM, ctx.group)
+            # dist._reduce_scatter_base(gx, grad_output, ReduceOp.SUM, ctx.group)
+            input_tensor_lst = list(torch.chunk(grad_output, dist.get_world_size(ctx.group)))
+            dist.reduce_scatter(gx, input_tensor_lst, op=ReduceOp.SUM, group=ctx.group)
         else:
             raise RuntimeError("Backend not supported!")
         return (None, gx, None)
