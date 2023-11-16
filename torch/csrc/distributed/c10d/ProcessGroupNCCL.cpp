@@ -680,6 +680,9 @@ ProcessGroupNCCL::ProcessGroupNCCL(
 #endif
 
   init();
+  // also initialize MPI...?
+  initMPIOnce();
+  
   const std::string OFF = "OFF";
   const char* torch_distributed_debug =
       parseEnvVarString("TORCH_DISTRIBUTED_DEBUG", OFF.c_str());
@@ -2815,153 +2818,170 @@ c10::intrusive_ptr<Work> ProcessGroupNCCL::barrier(const BarrierOptions& opts) {
   return work;
 }
 
-#ifdef ENABLE_NCCL_P2P_SUPPORT
+// #ifdef ENABLE_NCCL_P2P_SUPPORT
+// c10::intrusive_ptr<Work> ProcessGroupNCCL::alltoall_base(
+//     at::Tensor& outputTensor,
+//     at::Tensor& inputTensor,
+//     std::vector<int64_t>& outputSplitSizes,
+//     std::vector<int64_t>& inputSplitSizes,
+//     const AllToAllOptions& /* unused */) {
+//   check_gpu_single_tensor(outputTensor);
+//   check_gpu_single_tensor(inputTensor);
+//   if (outputSplitSizes.size() == 0 && inputSplitSizes.size() == 0) {
+//     std::vector<at::Tensor> inputTensors = {inputTensor};
+//     std::vector<at::Tensor> outputTensors = {outputTensor};
+
+//     RECORD_PARAM_COMMS_DATA(
+//         static_cast<int>(
+//             this->getSequenceNumberForGroup() +
+//             1), // seq + 1 to match collective
+//         this->getID(),
+//         inputTensor, // inputTensor
+//         outputTensor, // outputTensor
+//         rank_, // rank
+//         "all_to_all", // colName
+//         inputTensor.numel(), // inSize
+//         outputTensor.numel(), // outSize
+//         inputTensor.scalar_type(), // dType
+//         std::vector<int64_t>(), // inSplitSizes
+//         std::vector<int64_t>()); // outSplitSizes
+
+//     // avoidRecordStreams_ note: collective() will stash inputTensors and
+//     // outputTensors.
+//     return collective(
+//         inputTensors,
+//         outputTensors,
+//         [&](at::Tensor& input,
+//             at::Tensor& output,
+//             ncclComm_t comm,
+//             at::cuda::CUDAStream& stream) {
+//           // See [Sync Streams].
+//           if (!avoidRecordStreams_) {
+//             c10::cuda::CUDACachingAllocator::recordStream(
+//                 output.storage().data_ptr(), stream);
+//           }
+//           torch::cuda::nccl::all2all_single_equal_split(
+//               input, output, this->getSize(), comm, stream);
+//           return ncclSuccess;
+//         },
+//         OpType::ALLTOALL_BASE,
+//         "nccl:all_to_all");
+//   } else {
+//     c10d::checkSplitSizes(inputSplitSizes, inputTensor, size_);
+//     c10d::checkSplitSizes(outputSplitSizes, outputTensor, size_);
+//     std::vector<at::Tensor> inputTensors = {inputTensor};
+//     std::vector<at::Tensor> outputTensors = {outputTensor};
+
+//     RECORD_PARAM_COMMS_DATA(
+//         static_cast<int>(
+//             this->getSequenceNumberForGroup() +
+//             1), // seq + 1 to match collective
+//         this->getID(),
+//         inputTensor, // inputTensor
+//         outputTensor, // outputTensor
+//         rank_, // rank
+//         "all_to_allv", // colName
+//         inputTensor.numel(), // inSize
+//         outputTensor.numel(), // outSize
+//         inputTensor.scalar_type(), // dType
+//         inputSplitSizes, // inSplitSizes
+//         outputSplitSizes); // outSplitSizes
+
+//     // avoidRecordStreams_ note: collective() will stash inputTensors and
+//     // outputTensors.
+//     return collective(
+//         inputTensors,
+//         outputTensors,
+//         [&](at::Tensor& input,
+//             at::Tensor& output,
+//             ncclComm_t comm,
+//             at::cuda::CUDAStream& stream) {
+//           std::vector<size_t> send_lengths(size_);
+//           std::vector<size_t> recv_lengths(size_);
+//           std::vector<size_t> send_offsets(size_);
+//           std::vector<size_t> recv_offsets(size_);
+//           c10d::computeLengthsAndOffsets(
+//               inputSplitSizes, input, &send_lengths, &send_offsets);
+//           c10d::computeLengthsAndOffsets(
+//               outputSplitSizes, output, &recv_lengths, &recv_offsets);
+//           // See [Sync Streams].
+//           if (!avoidRecordStreams_) {
+//             c10::cuda::CUDACachingAllocator::recordStream(
+//                 output.storage().data_ptr(), stream);
+//           }
+//           torch::cuda::nccl::all2all_single_unequal_split(
+//               input.data_ptr(),
+//               send_lengths.data(),
+//               send_offsets.data(),
+//               output.data_ptr(),
+//               recv_lengths.data(),
+//               recv_offsets.data(),
+//               input.element_size(),
+//               input.scalar_type(),
+//               comm,
+//               stream);
+//           return ncclSuccess;
+//         },
+//         OpType::ALLTOALL_BASE,
+//         "nccl:all_to_all");
+//   }
+// }
+
 c10::intrusive_ptr<Work> ProcessGroupNCCL::alltoall_base(
     at::Tensor& outputTensor,
     at::Tensor& inputTensor,
     std::vector<int64_t>& outputSplitSizes,
     std::vector<int64_t>& inputSplitSizes,
     const AllToAllOptions& /* unused */) {
-  check_gpu_single_tensor(outputTensor);
-  check_gpu_single_tensor(inputTensor);
-  if (outputSplitSizes.size() == 0 && inputSplitSizes.size() == 0) {
-    std::vector<at::Tensor> inputTensors = {inputTensor};
-    std::vector<at::Tensor> outputTensors = {outputTensor};
-
-    RECORD_PARAM_COMMS_DATA(
-        static_cast<int>(
-            this->getSequenceNumberForGroup() +
-            1), // seq + 1 to match collective
-        this->getID(),
-        inputTensor, // inputTensor
-        outputTensor, // outputTensor
-        rank_, // rank
-        "all_to_all", // colName
-        inputTensor.numel(), // inSize
-        outputTensor.numel(), // outSize
-        inputTensor.scalar_type(), // dType
-        std::vector<int64_t>(), // inSplitSizes
-        std::vector<int64_t>()); // outSplitSizes
-
-    // avoidRecordStreams_ note: collective() will stash inputTensors and
-    // outputTensors.
-    return collective(
-        inputTensors,
-        outputTensors,
-        [&](at::Tensor& input,
-            at::Tensor& output,
-            ncclComm_t comm,
-            at::cuda::CUDAStream& stream) {
-          // See [Sync Streams].
-          if (!avoidRecordStreams_) {
-            c10::cuda::CUDACachingAllocator::recordStream(
-                output.storage().data_ptr(), stream);
-          }
-          torch::cuda::nccl::all2all_single_equal_split(
-              input, output, this->getSize(), comm, stream);
-          return ncclSuccess;
-        },
-        OpType::ALLTOALL_BASE,
-        "nccl:all_to_all");
-  } else {
-    c10d::checkSplitSizes(inputSplitSizes, inputTensor, size_);
-    c10d::checkSplitSizes(outputSplitSizes, outputTensor, size_);
-    std::vector<at::Tensor> inputTensors = {inputTensor};
-    std::vector<at::Tensor> outputTensors = {outputTensor};
-
-    RECORD_PARAM_COMMS_DATA(
-        static_cast<int>(
-            this->getSequenceNumberForGroup() +
-            1), // seq + 1 to match collective
-        this->getID(),
-        inputTensor, // inputTensor
-        outputTensor, // outputTensor
-        rank_, // rank
-        "all_to_allv", // colName
-        inputTensor.numel(), // inSize
-        outputTensor.numel(), // outSize
-        inputTensor.scalar_type(), // dType
-        inputSplitSizes, // inSplitSizes
-        outputSplitSizes); // outSplitSizes
-
-    // avoidRecordStreams_ note: collective() will stash inputTensors and
-    // outputTensors.
-    return collective(
-        inputTensors,
-        outputTensors,
-        [&](at::Tensor& input,
-            at::Tensor& output,
-            ncclComm_t comm,
-            at::cuda::CUDAStream& stream) {
-          std::vector<size_t> send_lengths(size_);
-          std::vector<size_t> recv_lengths(size_);
-          std::vector<size_t> send_offsets(size_);
-          std::vector<size_t> recv_offsets(size_);
-          c10d::computeLengthsAndOffsets(
-              inputSplitSizes, input, &send_lengths, &send_offsets);
-          c10d::computeLengthsAndOffsets(
-              outputSplitSizes, output, &recv_lengths, &recv_offsets);
-          // See [Sync Streams].
-          if (!avoidRecordStreams_) {
-            c10::cuda::CUDACachingAllocator::recordStream(
-                output.storage().data_ptr(), stream);
-          }
-          torch::cuda::nccl::all2all_single_unequal_split(
-              input.data_ptr(),
-              send_lengths.data(),
-              send_offsets.data(),
-              output.data_ptr(),
-              recv_lengths.data(),
-              recv_offsets.data(),
-              input.element_size(),
-              input.scalar_type(),
-              comm,
-              stream);
-          return ncclSuccess;
-        },
-        OpType::ALLTOALL_BASE,
-        "nccl:all_to_all");
-  }
+  return ProcessGroupMPI::alltoall_base(outputTensor, inputTensor, outputSplitSizes, inputSplitSizes);
 }
+
+
+// c10::intrusive_ptr<Work> ProcessGroupNCCL::alltoall(
+//     std::vector<at::Tensor>& outputTensors,
+//     std::vector<at::Tensor>& inputTensors,
+//     const AllToAllOptions& /* unused */) {
+//   auto device = outputTensors[0].device();
+//   for (const auto r : c10::irange(outputTensors.size())) {
+//     check_gpu_single_tensor(outputTensors[r]);
+//     check_gpu_single_tensor(inputTensors[r]);
+//     TORCH_CHECK(
+//         device == outputTensors[r].device() &&
+//             device == inputTensors[r].device(),
+//         "Tensors must be on the same device")
+//   }
+//   std::vector<at::Tensor> inputTensor0 = {inputTensors[0]};
+//   std::vector<at::Tensor> outputTensor0 = {outputTensors[0]};
+//   return collective(
+//       inputTensor0,
+//       outputTensor0,
+//       [&](at::Tensor& /* unused */,
+//           at::Tensor& /* unused */,
+//           ncclComm_t comm,
+//           at::cuda::CUDAStream& stream) {
+//         torch::cuda::nccl::all2all(outputTensors, inputTensors, comm, stream);
+//         return ncclSuccess;
+//       },
+//       [&](std::vector<at::cuda::CUDAStream>&,
+//           c10::intrusive_ptr<ProcessGroupNCCL::WorkNCCL>& work) {
+//         if (avoidRecordStreams_) {
+//           // inputTensor0 and outputTensor0 are stashed redundantly by
+//           // collective(), but that's ok.
+//           auto& v = work->stashed_for_allocator_safety_;
+//           v->insert(v->end(), inputTensors.begin(), inputTensors.end());
+//           v->insert(v->end(), outputTensors.begin(), outputTensors.end());
+//         }
+//       },
+//       [](std::vector<at::cuda::CUDAStream>&,
+//          c10::intrusive_ptr<ProcessGroupNCCL::WorkNCCL>& work) {},
+//       OpType::ALLTOALL);
+// }
 
 c10::intrusive_ptr<Work> ProcessGroupNCCL::alltoall(
     std::vector<at::Tensor>& outputTensors,
     std::vector<at::Tensor>& inputTensors,
-    const AllToAllOptions& /* unused */) {
-  auto device = outputTensors[0].device();
-  for (const auto r : c10::irange(outputTensors.size())) {
-    check_gpu_single_tensor(outputTensors[r]);
-    check_gpu_single_tensor(inputTensors[r]);
-    TORCH_CHECK(
-        device == outputTensors[r].device() &&
-            device == inputTensors[r].device(),
-        "Tensors must be on the same device")
-  }
-  std::vector<at::Tensor> inputTensor0 = {inputTensors[0]};
-  std::vector<at::Tensor> outputTensor0 = {outputTensors[0]};
-  return collective(
-      inputTensor0,
-      outputTensor0,
-      [&](at::Tensor& /* unused */,
-          at::Tensor& /* unused */,
-          ncclComm_t comm,
-          at::cuda::CUDAStream& stream) {
-        torch::cuda::nccl::all2all(outputTensors, inputTensors, comm, stream);
-        return ncclSuccess;
-      },
-      [&](std::vector<at::cuda::CUDAStream>&,
-          c10::intrusive_ptr<ProcessGroupNCCL::WorkNCCL>& work) {
-        if (avoidRecordStreams_) {
-          // inputTensor0 and outputTensor0 are stashed redundantly by
-          // collective(), but that's ok.
-          auto& v = work->stashed_for_allocator_safety_;
-          v->insert(v->end(), inputTensors.begin(), inputTensors.end());
-          v->insert(v->end(), outputTensors.begin(), outputTensors.end());
-        }
-      },
-      [](std::vector<at::cuda::CUDAStream>&,
-         c10::intrusive_ptr<ProcessGroupNCCL::WorkNCCL>& work) {},
-      OpType::ALLTOALL);
+    const AllToAllOptions& opts) {
+  return ProcessGroupMPI::alltoall(outputTensors, inputTensors, opts);
 }
 
 c10::intrusive_ptr<Work> ProcessGroupNCCL::send(
