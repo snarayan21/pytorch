@@ -685,7 +685,7 @@ c10::intrusive_ptr<Work> ProcessGroupMPI::scatter(
   }
 }
 
-c10::intrusive_ptr<ProcessGroup::Work> ProcessGroupMPI::reduce_scatter(
+c10::intrusive_ptr<Work> ProcessGroupMPI::reduce_scatter(
     std::vector<at::Tensor>& outputTensors,
     std::vector<std::vector<at::Tensor>>& inputTensors,
     const ReduceScatterOptions& opts) {
