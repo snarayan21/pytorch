@@ -54,10 +54,10 @@ bool cudaAwareMpiCheck() {
   if (MPIX_Query_cuda_support() == 1) {
     return true;
   } else {
-    return true;
+    return false;
   }
 #else // !defined(MPIX_CUDA_AWARE_SUPPORT)
-  return true;
+  return false;
 #endif // MPIX_CUDA_AWARE_SUPPORT
 }
 
