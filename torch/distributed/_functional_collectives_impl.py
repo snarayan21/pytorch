@@ -181,11 +181,11 @@ def _all_gather_into_tensor(shard, tag, ranks, group_size):
         tensor_list = list(torch.chunk(out_tensor, group_size))
         work = dist.all_gather(tensor_list, shard, group=group, async_op=True)
     else:
-        # work = dist.all_gather_into_tensor(out_tensor, shard, group=group, async_op=True)
-        tensor_list = list(
-            torch.chunk(out_tensor, dist.get_world_size(group=group))
-        )
-        work = dist.all_gather(tensor_list, shard, group=group, async_op=True)
+        work = dist.all_gather_into_tensor(out_tensor, shard, group=group, async_op=True)
+        # tensor_list = list(
+        #     torch.chunk(out_tensor, dist.get_world_size(group=group))
+        # )
+        # work = dist.all_gather(tensor_list, shard, group=group, async_op=True)
         
         
     _register_tensor_work(out_tensor, work)
@@ -302,11 +302,11 @@ def _all_gather_into_tensor_coalesced_fallback(output_tensors, input_tensors, gr
     else:
         with c10d._coalescing_manager(group=group, async_ops=True) as cm:
             for in_t, out_t in zip(input_tensors, output_tensors):
-                # dist.all_gather_into_tensor(out_t, in_t, group=group, async_op=True)
-                tensor_list = list(
-                    torch.chunk(out_t, dist.get_world_size(group=group))
-                )
-                dist.all_gather(tensor_list, in_t, group=group, async_op=True)
+                dist.all_gather_into_tensor(out_t, in_t, group=group, async_op=True)
+                # tensor_list = list(
+                #     torch.chunk(out_t, dist.get_world_size(group=group))
+                # )
+                # dist.all_gather(tensor_list, in_t, group=group, async_op=True)
         return cm
 
 def _reduce_scatter_tensor_coalesced_fallback(output_tensors, input_tensors, op, group, async_op=False):

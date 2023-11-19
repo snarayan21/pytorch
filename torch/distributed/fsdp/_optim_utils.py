@@ -221,13 +221,13 @@ def _communicate_optim_state(
             # has the same shape as the sharded flat parameter
             buffer_size = flat_param._full_param_padded.size()  # type: ignore[attr-defined]
             tensor_buffer = value.new_zeros(*buffer_size)
-            # dist.all_gather_into_tensor(
-            #     tensor_buffer, value, group=fsdp_state.process_group
-            # )
-            tensor_list = list(
-                torch.chunk(tensor_buffer, dist.get_world_size(group=fsdp_state.process_group))
+            dist.all_gather_into_tensor(
+                tensor_buffer, value, group=fsdp_state.process_group
             )
-            dist.all_gather(tensor_list, value, group=fsdp_state.process_group)
+            # tensor_list = list(
+            #     torch.chunk(tensor_buffer, dist.get_world_size(group=fsdp_state.process_group))
+            # )
+            # dist.all_gather(tensor_list, value, group=fsdp_state.process_group)
             fsdp_state._device_handle.synchronize()
             unpadded_numel = cast(
                 nn.Parameter, flat_param._unpadded_unsharded_size
